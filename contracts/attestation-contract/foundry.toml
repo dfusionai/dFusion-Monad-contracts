@@ -1,0 +1,11 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+
+# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
+[rpc_endpoints]
+monad = "https://monad-mainnet.drpc.org"
+
+[etherscan]
+monad = { key = "${MONADSCAN_API_KEY}", url = "https://api.monadvision.com/api" }
