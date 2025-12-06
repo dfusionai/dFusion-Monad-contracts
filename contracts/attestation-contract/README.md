@@ -7,7 +7,7 @@ The **SimplifiedAttestationCenter** is a blockchain-based attestation system tha
 ## 🌐 Deployed Contract
 
 **Network**: Monad Mainnet (Chain ID: 143)  
-**Address**: [`0x5a2fA76D1595B4D047c54e0DDdF36e5b2Dd3AACd`](https://monadvision.com/address/0x5a2fA76D1595B4D047c54e0DDdF36e5b2Dd3AACd)
+**Address**: ~~[`0x5a2fA76D1595B4D047c54e0DDdF36e5b2Dd3AACd`](https://monadvision.com/address/0x5a2fA76D1595B4D047c54e0DDdF36e5b2Dd3AACd)~~ *(deprecated — pending redeployment)*
 
 ## ✨ Key Features
 
@@ -17,7 +17,7 @@ The **SimplifiedAttestationCenter** is a blockchain-based attestation system tha
 - Batch authorization capabilities
 
 ### 📝 **Attestation Management**
-- Create cryptographically signed attestations
+- Create cryptographically signed attestations with expiry deadlines
 - Revoke attestations when needed
 - Prevent duplicate attestations
 - Immutable attestation history
@@ -28,10 +28,12 @@ The **SimplifiedAttestationCenter** is a blockchain-based attestation system tha
 - Check total attestation counts
 
 ### 🛡️ **Security Features**
-- Cryptographic signature verification
+- Cryptographic signature verification with deadline expiry
 - Reentrancy protection
-- Access control mechanisms
+- Access control mechanisms (authorization required for both creation and revocation)
 - Duplicate prevention
+- Hash collision resistance via `abi.encode`
+- Ownership renunciation disabled to prevent accidental lockout
 
 ## 🏗️ Contract Architecture
 
@@ -44,7 +46,7 @@ The **SimplifiedAttestationCenter** is a blockchain-based attestation system tha
               ▼
 ┌─────────────────────────────────────┐
 │     Authorized Attesters            │
-│   (Can create attestations)         │
+│   (Can create & revoke attestations)│
 └─────────────┬───────────────────────┘
               │
               ▼
@@ -74,6 +76,7 @@ struct AttestationRequest {
     bytes32 subject;    // The subject being attested to
     bytes data;        // Additional attestation data
     bytes signature;   // Cryptographic signature
+    uint256 deadline;  // Timestamp after which signature expires
 }
 ```
 
@@ -110,6 +113,10 @@ const attesters = ["0x1234...", "0x5678...", "0x9abc..."];
 await contract.batchSetAttesterAuthorization(attesters, true);
 ```
 
+#### `renounceOwnership()` *(Disabled)*
+**Purpose**: Prevented to avoid accidental contract lockout
+**Behavior**: Always reverts with "Ownership renunciation disabled"
+
 ### 🎭 Attester Functions
 
 #### `createAttestation(AttestationRequest request)`
@@ -121,13 +128,18 @@ await contract.batchSetAttesterAuthorization(attesters, true);
 - `request.subject`: 32-byte identifier of what's being attested
 - `request.data`: Additional data (flexible format)
 - `request.signature`: Cryptographic signature
+- `request.deadline`: Unix timestamp after which the signature is invalid
 
 **Example Usage**:
 ```javascript
 // Generate signature (off-chain)
-const messageHash = ethers.utils.solidityKeccak256(
-  ["address", "bytes32", "bytes", "uint256", "address"],
-  [attesterAddress, subject, data, chainId, contractAddress]
+const deadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour from now
+
+const messageHash = ethers.utils.keccak256(
+  ethers.utils.defaultAbiCoder.encode(
+    ["address", "bytes32", "bytes", "uint256", "uint256", "address"],
+    [attesterAddress, subject, data, deadline, chainId, contractAddress]
+  )
 );
 const signature = await signer.signMessage(ethers.utils.arrayify(messageHash));
 
@@ -139,7 +151,8 @@ const request = {
     level: "kyc_passed",
     timestamp: Date.now()
   })),
-  signature: signature
+  signature: signature,
+  deadline: deadline
 };
 
 const attestationId = await contract.createAttestation(request);
@@ -147,7 +160,7 @@ const attestationId = await contract.createAttestation(request);
 
 #### `revokeAttestation(uint256 attestationId)`
 **Purpose**: Revoke an existing attestation
-**Access**: Original attester or contract owner
+**Access**: Original attester or contract owner (must be authorized)
 **Parameters**:
 - `attestationId`: ID of the attestation to revoke
 
@@ -155,6 +168,8 @@ const attestationId = await contract.createAttestation(request);
 ```javascript
 await contract.revokeAttestation(1);
 ```
+
+> ⚠️ **Note**: The caller must still be an authorized attester to revoke. Deauthorized attesters cannot revoke their previous attestations.
 
 ### 🔍 View Functions
 
@@ -249,12 +264,15 @@ event AttesterAuthorizationChanged(
 
 ### Custom Errors
 
-- `UnauthorizedAttester()`: Caller is not an authorized attester
-- `InvalidSignature()`: Provided signature is invalid
-- `AttestationNotFound()`: Attestation with given ID doesn't exist
-- `AttestationAlreadyExists()`: Duplicate attestation detected
-- `AttestationAlreadyRevoked()`: Attempting to revoke already revoked attestation
-- `OnlyAttesterCanRevoke()`: Only original attester or owner can revoke
+| Error | Description |
+|-------|-------------|
+| `UnauthorizedAttester()` | Caller is not an authorized attester |
+| `InvalidSignature()` | Provided signature is invalid |
+| `AttestationNotFound()` | Attestation with given ID doesn't exist |
+| `AttestationAlreadyExists()` | Duplicate attestation detected |
+| `AttestationAlreadyRevoked()` | Attempting to revoke already revoked attestation |
+| `OnlyAttesterCanRevoke()` | Only original attester or owner can revoke |
+| `SignatureExpired()` | The signature deadline has passed |
 
 ### Error Handling Example
 ```javascript
@@ -267,11 +285,32 @@ try {
     console.log("The signature provided is invalid");
   } else if (error.message.includes("AttestationAlreadyExists")) {
     console.log("This attestation already exists");
+  } else if (error.message.includes("SignatureExpired")) {
+    console.log("The signature has expired - generate a new one with a future deadline");
   }
 }
 ```
 
 ## 🔗 Integration Guide
+
+### Signature Generation
+
+The signature must be computed over a hash that includes the deadline:
+
+```javascript
+function generateAttestationSignature(signer, subject, data, deadline, chainId, contractAddress) {
+  // Use abi.encode (NOT solidityKeccak256/encodePacked) to match contract
+  const messageHash = ethers.utils.keccak256(
+    ethers.utils.defaultAbiCoder.encode(
+      ["address", "bytes32", "bytes", "uint256", "uint256", "address"],
+      [await signer.getAddress(), subject, data, deadline, chainId, contractAddress]
+    )
+  );
+  
+  // Sign as Ethereum signed message
+  return await signer.signMessage(ethers.utils.arrayify(messageHash));
+}
+```
 
 ### Backend Integration Example
 
@@ -292,15 +331,18 @@ async function isAuthorizedAttester(address) {
 async function createIdentityAttestation(userAddress, verificationData) {
   const subject = ethers.utils.keccak256(ethers.utils.toUtf8Bytes(userAddress));
   const data = ethers.utils.toUtf8Bytes(JSON.stringify(verificationData));
+  const deadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour validity
   
-  // Generate signature
-  const messageHash = ethers.utils.solidityKeccak256(
-    ["address", "bytes32", "bytes", "uint256", "address"],
-    [await signer.getAddress(), subject, data, network.chainId, contract.address]
+  // Generate signature using abi.encode
+  const messageHash = ethers.utils.keccak256(
+    ethers.utils.defaultAbiCoder.encode(
+      ["address", "bytes32", "bytes", "uint256", "uint256", "address"],
+      [await signer.getAddress(), subject, data, deadline, network.chainId, contract.address]
+    )
   );
   const signature = await signer.signMessage(ethers.utils.arrayify(messageHash));
   
-  const request = { subject, data, signature };
+  const request = { subject, data, signature, deadline };
   
   try {
     const tx = await contract.createAttestation(request);
@@ -424,43 +466,56 @@ async function deploy() {
 
 ### 1. **Access Control**
 - Only authorized attesters can create attestations
+- Only authorized attesters can revoke their own attestations
 - Only the contract owner can manage attester permissions
-- Only original attester or owner can revoke attestations
+- Deauthorized attesters lose all privileges immediately
 
 ### 2. **Signature Verification**
 - All attestations must be cryptographically signed
 - Signatures are verified against the expected attester
-- Message hash includes contract address and chain ID to prevent replay attacks
+- Message hash includes contract address and chain ID to prevent cross-chain replay
+- **Signatures have a deadline** — expired signatures are rejected
 
 ### 3. **Reentrancy Protection**
 - All state-changing functions are protected against reentrancy attacks
 - Uses OpenZeppelin's ReentrancyGuard
 
 ### 4. **Duplicate Prevention**
-- Identical attestations cannot be created twice
+- Identical attestations (same attester, subject, data, deadline) cannot be created twice
 - Hash-based duplicate detection
+- To re-attest after revocation, use a different deadline
+
+### 5. **Hash Collision Resistance**
+- Uses `abi.encode` instead of `abi.encodePacked` to prevent hash collisions with dynamic data
+
+### 6. **Ownership Protection**
+- `renounceOwnership()` is disabled to prevent accidental contract lockout
 
 ## 📊 Gas Optimization
 
 ### Function Gas Costs (Approximate)
-- `createAttestation`: ~280,000 gas
-- `revokeAttestation`: ~30,000 gas
-- `setAttesterAuthorization`: ~47,000 gas
-- View functions: ~2,000-5,000 gas
+| Function | Gas Cost |
+|----------|----------|
+| `createAttestation` | ~280,000 |
+| `revokeAttestation` | ~32,000 |
+| `setAttesterAuthorization` | ~47,000 |
+| View functions | ~2,000-5,000 |
 
 ### Optimization Tips
 - Batch operations when possible using `batchSetAttesterAuthorization`
 - Use view functions for data retrieval to avoid gas costs
 - Consider off-chain signature generation and verification
+- Set reasonable deadlines (e.g., 1 hour) to allow re-attestation without excessive delay
 
 ## 🧪 Testing
 
 The contract includes comprehensive tests covering:
-- ✅ 100% code coverage
 - ✅ All function scenarios
 - ✅ Error conditions
-- ✅ Security vulnerabilities
+- ✅ Security vulnerabilities (audit findings addressed)
 - ✅ Edge cases
+- ✅ Signature expiry
+- ✅ Deauthorized attester restrictions
 
 Run tests with:
 ```bash
@@ -475,8 +530,9 @@ forge test -vv
 // 1. Owner authorizes attester
 await contract.setAttesterAuthorization(attesterAddress, true);
 
-// 2. Attester creates attestation
-const attestationId = await createAttestation(subject, data, signature);
+// 2. Attester creates attestation (with 1 hour deadline)
+const deadline = Math.floor(Date.now() / 1000) + 3600;
+const attestationId = await createAttestation(subject, data, signature, deadline);
 
 // 3. Anyone can verify the attestation
 const isValid = await contract.isValidAttestation(attestationId);
@@ -484,9 +540,27 @@ const isValid = await contract.isValidAttestation(attestationId);
 // 4. Retrieve full attestation details
 const attestation = await contract.getAttestation(attestationId);
 
-// 5. Optionally revoke if needed
+// 5. Optionally revoke if needed (attester must still be authorized)
 await contract.revokeAttestation(attestationId);
+
+// 6. Re-attest with new deadline if needed
+const newDeadline = Math.floor(Date.now() / 1000) + 3600;
+const newAttestationId = await createAttestation(subject, data, newSignature, newDeadline);
 ```
+
+## 📝 Changelog
+
+### v2.0.0 (Pending Deployment)
+**Security Fixes:**
+- Added `deadline` field to `AttestationRequest` to prevent indefinite signature replay
+- Added `onlyAuthorizedAttester` modifier to `revokeAttestation()` — deauthorized attesters can no longer revoke
+- Changed `abi.encodePacked` to `abi.encode` in hash computation to prevent collision attacks
+- Disabled `renounceOwnership()` to prevent accidental contract lockout
+
+**Breaking Changes:**
+- `AttestationRequest` struct now requires a `deadline` field
+- Signatures must include the deadline in the hash computation
+- Revocation now requires the caller to be an authorized attester
 
 ## 🤝 Support & Integration
 
