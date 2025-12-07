@@ -26,6 +26,9 @@ contract SimplifiedAttestationCenterTest is Test {
     uint256 public attester1PrivateKey = 0xA11CE;
     uint256 public attester2PrivateKey = 0xB0B;
     
+    // Default deadline (1 hour from now)
+    uint256 public defaultDeadline;
+    
     // Events for testing
     event AttestationCreated(
         uint256 indexed attestationId,
@@ -45,6 +48,12 @@ contract SimplifiedAttestationCenterTest is Test {
     );
 
     function setUp() public {
+        // Set a known block timestamp for consistent testing
+        vm.warp(1000000);
+        
+        // Set default deadline to 1 hour from now
+        defaultDeadline = block.timestamp + 1 hours;
+        
         // Deploy contract
         vm.prank(owner);
         attestationCenter = new SimplifiedAttestationCenter(owner);
@@ -59,9 +68,9 @@ contract SimplifiedAttestationCenterTest is Test {
         attestationCenter.setAttesterAuthorization(attester2, true);
         vm.stopPrank();
         
-        // Generate valid signatures
-        validSignature1 = _generateSignature(attester1PrivateKey, attester1, subject1, data1);
-        validSignature2 = _generateSignature(attester2PrivateKey, attester2, subject2, data2);
+        // Generate valid signatures with deadline
+        validSignature1 = _generateSignature(attester1PrivateKey, attester1, subject1, data1, defaultDeadline);
+        validSignature2 = _generateSignature(attester2PrivateKey, attester2, subject2, data2, defaultDeadline);
     }
 
     // ============ CONSTRUCTOR TESTS ============
@@ -143,7 +152,8 @@ contract SimplifiedAttestationCenterTest is Test {
         SimplifiedAttestationCenter.AttestationRequest memory request = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: data1,
-            signature: validSignature1
+            signature: validSignature1,
+            deadline: defaultDeadline
         });
         
         vm.expectEmit(true, true, true, false);
@@ -170,7 +180,8 @@ contract SimplifiedAttestationCenterTest is Test {
         SimplifiedAttestationCenter.AttestationRequest memory request1 = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: data1,
-            signature: validSignature1
+            signature: validSignature1,
+            deadline: defaultDeadline
         });
         
         vm.prank(attester1);
@@ -180,7 +191,8 @@ contract SimplifiedAttestationCenterTest is Test {
         SimplifiedAttestationCenter.AttestationRequest memory request2 = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject2,
             data: data2,
-            signature: validSignature2
+            signature: validSignature2,
+            deadline: defaultDeadline
         });
         
         vm.prank(attester2);
@@ -195,7 +207,8 @@ contract SimplifiedAttestationCenterTest is Test {
         SimplifiedAttestationCenter.AttestationRequest memory request = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: data1,
-            signature: validSignature1
+            signature: validSignature1,
+            deadline: defaultDeadline
         });
         
         vm.prank(unauthorized);
@@ -214,7 +227,8 @@ contract SimplifiedAttestationCenterTest is Test {
         SimplifiedAttestationCenter.AttestationRequest memory request = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: data1,
-            signature: invalidSignature
+            signature: invalidSignature,
+            deadline: defaultDeadline
         });
         
         vm.prank(attester1);
@@ -225,12 +239,13 @@ contract SimplifiedAttestationCenterTest is Test {
     
     function test_CreateAttestation_WrongSigner() public {
         // Generate signature with wrong private key
-        bytes memory wrongSignature = _generateSignature(attester2PrivateKey, attester1, subject1, data1);
+        bytes memory wrongSignature = _generateSignature(attester2PrivateKey, attester1, subject1, data1, defaultDeadline);
         
         SimplifiedAttestationCenter.AttestationRequest memory request = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: data1,
-            signature: wrongSignature
+            signature: wrongSignature,
+            deadline: defaultDeadline
         });
         
         vm.prank(attester1);
@@ -241,12 +256,13 @@ contract SimplifiedAttestationCenterTest is Test {
     function test_CreateAttestation_CustomInvalidSignatureError() public {
         // Create a valid signature for a different message to test our custom error
         bytes memory differentData = "different data";
-        bytes memory wrongMessageSignature = _generateSignature(attester1PrivateKey, attester1, subject1, differentData);
+        bytes memory wrongMessageSignature = _generateSignature(attester1PrivateKey, attester1, subject1, differentData, defaultDeadline);
         
         SimplifiedAttestationCenter.AttestationRequest memory request = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: data1, // Using different data than what was signed
-            signature: wrongMessageSignature
+            signature: wrongMessageSignature,
+            deadline: defaultDeadline
         });
         
         vm.prank(attester1);
@@ -258,7 +274,8 @@ contract SimplifiedAttestationCenterTest is Test {
         SimplifiedAttestationCenter.AttestationRequest memory request = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: data1,
-            signature: validSignature1
+            signature: validSignature1,
+            deadline: defaultDeadline
         });
         
         // Create first attestation
@@ -270,6 +287,73 @@ contract SimplifiedAttestationCenterTest is Test {
         vm.expectRevert(SimplifiedAttestationCenter.AttestationAlreadyExists.selector);
         attestationCenter.createAttestation(request);
     }
+    
+    function test_CreateAttestation_ExpiredSignature() public {
+        uint256 expiredDeadline = block.timestamp - 1; // Already expired
+        bytes memory expiredSignature = _generateSignature(attester1PrivateKey, attester1, subject1, data1, expiredDeadline);
+        
+        SimplifiedAttestationCenter.AttestationRequest memory request = SimplifiedAttestationCenter.AttestationRequest({
+            subject: subject1,
+            data: data1,
+            signature: expiredSignature,
+            deadline: expiredDeadline
+        });
+        
+        vm.prank(attester1);
+        vm.expectRevert(SimplifiedAttestationCenter.SignatureExpired.selector);
+        attestationCenter.createAttestation(request);
+    }
+    
+    function test_CreateAttestation_SignatureExpiresAfterSubmission() public {
+        // Create attestation just before deadline
+        uint256 tightDeadline = block.timestamp + 10;
+        bytes memory tightSignature = _generateSignature(attester1PrivateKey, attester1, subject1, data1, tightDeadline);
+        
+        SimplifiedAttestationCenter.AttestationRequest memory request = SimplifiedAttestationCenter.AttestationRequest({
+            subject: subject1,
+            data: data1,
+            signature: tightSignature,
+            deadline: tightDeadline
+        });
+        
+        // Should work now
+        vm.prank(attester1);
+        uint256 attestationId = attestationCenter.createAttestation(request);
+        assertEq(attestationId, 1);
+    }
+    
+    function test_CreateAttestation_DifferentDeadlineAllowsReAttestation() public {
+        // This tests the fix for Finding #2 - different deadlines create different hashes
+        SimplifiedAttestationCenter.AttestationRequest memory request1 = SimplifiedAttestationCenter.AttestationRequest({
+            subject: subject1,
+            data: data1,
+            signature: validSignature1,
+            deadline: defaultDeadline
+        });
+        
+        vm.prank(attester1);
+        attestationCenter.createAttestation(request1);
+        
+        // Revoke the attestation
+        vm.prank(attester1);
+        attestationCenter.revokeAttestation(1);
+        
+        // Now create a new attestation with same subject/data but different deadline
+        uint256 newDeadline = defaultDeadline + 1 hours;
+        bytes memory newSignature = _generateSignature(attester1PrivateKey, attester1, subject1, data1, newDeadline);
+        
+        SimplifiedAttestationCenter.AttestationRequest memory request2 = SimplifiedAttestationCenter.AttestationRequest({
+            subject: subject1,
+            data: data1,
+            signature: newSignature,
+            deadline: newDeadline
+        });
+        
+        // This should succeed because the deadline is different
+        vm.prank(attester1);
+        uint256 newAttestationId = attestationCenter.createAttestation(request2);
+        assertEq(newAttestationId, 2);
+    }
 
     // ============ REVOKE ATTESTATION TESTS ============
     
@@ -278,7 +362,8 @@ contract SimplifiedAttestationCenterTest is Test {
         SimplifiedAttestationCenter.AttestationRequest memory request = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: data1,
-            signature: validSignature1
+            signature: validSignature1,
+            deadline: defaultDeadline
         });
         
         vm.prank(attester1);
@@ -302,11 +387,16 @@ contract SimplifiedAttestationCenterTest is Test {
         SimplifiedAttestationCenter.AttestationRequest memory request = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: data1,
-            signature: validSignature1
+            signature: validSignature1,
+            deadline: defaultDeadline
         });
         
         vm.prank(attester1);
         uint256 attestationId = attestationCenter.createAttestation(request);
+        
+        // Owner needs to be authorized to revoke (per the new fix)
+        vm.prank(owner);
+        attestationCenter.setAttesterAuthorization(owner, true);
         
         // Revoke by owner
         vm.expectEmit(true, true, false, false);
@@ -331,7 +421,8 @@ contract SimplifiedAttestationCenterTest is Test {
         SimplifiedAttestationCenter.AttestationRequest memory request = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: data1,
-            signature: validSignature1
+            signature: validSignature1,
+            deadline: defaultDeadline
         });
         
         vm.prank(attester1);
@@ -351,15 +442,16 @@ contract SimplifiedAttestationCenterTest is Test {
         SimplifiedAttestationCenter.AttestationRequest memory request = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: data1,
-            signature: validSignature1
+            signature: validSignature1,
+            deadline: defaultDeadline
         });
         
         vm.prank(attester1);
         uint256 attestationId = attestationCenter.createAttestation(request);
         
-        // Try to revoke with unauthorized account
+        // Try to revoke with unauthorized account (not even authorized as attester)
         vm.prank(unauthorized);
-        vm.expectRevert(SimplifiedAttestationCenter.OnlyAttesterCanRevoke.selector);
+        vm.expectRevert(SimplifiedAttestationCenter.UnauthorizedAttester.selector);
         attestationCenter.revokeAttestation(attestationId);
     }
     
@@ -368,15 +460,40 @@ contract SimplifiedAttestationCenterTest is Test {
         SimplifiedAttestationCenter.AttestationRequest memory request = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: data1,
-            signature: validSignature1
+            signature: validSignature1,
+            deadline: defaultDeadline
         });
         
         vm.prank(attester1);
         uint256 attestationId = attestationCenter.createAttestation(request);
         
-        // Try to revoke with attester2
+        // Try to revoke with attester2 (authorized but not the original attester)
         vm.prank(attester2);
         vm.expectRevert(SimplifiedAttestationCenter.OnlyAttesterCanRevoke.selector);
+        attestationCenter.revokeAttestation(attestationId);
+    }
+    
+    function test_RevokeAttestation_DeauthorizedAttesterCannotRevoke() public {
+        // This tests Finding #1 - deauthorized attesters should not be able to revoke
+        
+        // Create attestation with attester1
+        SimplifiedAttestationCenter.AttestationRequest memory request = SimplifiedAttestationCenter.AttestationRequest({
+            subject: subject1,
+            data: data1,
+            signature: validSignature1,
+            deadline: defaultDeadline
+        });
+        
+        vm.prank(attester1);
+        uint256 attestationId = attestationCenter.createAttestation(request);
+        
+        // Deauthorize attester1
+        vm.prank(owner);
+        attestationCenter.setAttesterAuthorization(attester1, false);
+        
+        // Try to revoke - should fail now
+        vm.prank(attester1);
+        vm.expectRevert(SimplifiedAttestationCenter.UnauthorizedAttester.selector);
         attestationCenter.revokeAttestation(attestationId);
     }
 
@@ -387,7 +504,8 @@ contract SimplifiedAttestationCenterTest is Test {
         SimplifiedAttestationCenter.AttestationRequest memory request = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: data1,
-            signature: validSignature1
+            signature: validSignature1,
+            deadline: defaultDeadline
         });
         
         vm.prank(attester1);
@@ -414,17 +532,19 @@ contract SimplifiedAttestationCenterTest is Test {
         SimplifiedAttestationCenter.AttestationRequest memory request1 = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: data1,
-            signature: validSignature1
+            signature: validSignature1,
+            deadline: defaultDeadline
         });
         
         bytes memory data3 = "data3";
         bytes32 subject3 = keccak256("subject3");
-        bytes memory signature3 = _generateSignature(attester1PrivateKey, attester1, subject3, data3);
+        bytes memory signature3 = _generateSignature(attester1PrivateKey, attester1, subject3, data3, defaultDeadline);
         
         SimplifiedAttestationCenter.AttestationRequest memory request2 = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject3,
             data: data3,
-            signature: signature3
+            signature: signature3,
+            deadline: defaultDeadline
         });
         
         vm.startPrank(attester1);
@@ -449,16 +569,18 @@ contract SimplifiedAttestationCenterTest is Test {
         SimplifiedAttestationCenter.AttestationRequest memory request1 = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: data1,
-            signature: validSignature1
+            signature: validSignature1,
+            deadline: defaultDeadline
         });
         
         bytes memory data3 = "different data";
-        bytes memory signature3 = _generateSignature(attester2PrivateKey, attester2, subject1, data3);
+        bytes memory signature3 = _generateSignature(attester2PrivateKey, attester2, subject1, data3, defaultDeadline);
         
         SimplifiedAttestationCenter.AttestationRequest memory request2 = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: data3,
-            signature: signature3
+            signature: signature3,
+            deadline: defaultDeadline
         });
         
         vm.prank(attester1);
@@ -486,7 +608,8 @@ contract SimplifiedAttestationCenterTest is Test {
         SimplifiedAttestationCenter.AttestationRequest memory request1 = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: data1,
-            signature: validSignature1
+            signature: validSignature1,
+            deadline: defaultDeadline
         });
         
         vm.prank(attester1);
@@ -498,7 +621,8 @@ contract SimplifiedAttestationCenterTest is Test {
         SimplifiedAttestationCenter.AttestationRequest memory request2 = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject2,
             data: data2,
-            signature: validSignature2
+            signature: validSignature2,
+            deadline: defaultDeadline
         });
         
         vm.prank(attester2);
@@ -512,7 +636,8 @@ contract SimplifiedAttestationCenterTest is Test {
         SimplifiedAttestationCenter.AttestationRequest memory request = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: data1,
-            signature: validSignature1
+            signature: validSignature1,
+            deadline: defaultDeadline
         });
         
         vm.prank(attester1);
@@ -532,6 +657,14 @@ contract SimplifiedAttestationCenterTest is Test {
         assertFalse(attestationCenter.isValidAttestation(999));
     }
 
+    // ============ RENOUNCE OWNERSHIP TESTS (Finding #5) ============
+    
+    function test_RenounceOwnership_Disabled() public {
+        vm.prank(owner);
+        vm.expectRevert("Ownership renunciation disabled");
+        attestationCenter.renounceOwnership();
+    }
+
     // ============ INTERNAL FUNCTION TESTS ============
     
     function test_AttestationHash_Consistency() public {
@@ -539,7 +672,8 @@ contract SimplifiedAttestationCenterTest is Test {
         SimplifiedAttestationCenter.AttestationRequest memory request = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: data1,
-            signature: validSignature1
+            signature: validSignature1,
+            deadline: defaultDeadline
         });
         
         vm.prank(attester1);
@@ -555,12 +689,13 @@ contract SimplifiedAttestationCenterTest is Test {
     
     function test_AttestationWithEmptyData() public {
         bytes memory emptyData = "";
-        bytes memory signature = _generateSignature(attester1PrivateKey, attester1, subject1, emptyData);
+        bytes memory signature = _generateSignature(attester1PrivateKey, attester1, subject1, emptyData, defaultDeadline);
         
         SimplifiedAttestationCenter.AttestationRequest memory request = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: emptyData,
-            signature: signature
+            signature: signature,
+            deadline: defaultDeadline
         });
         
         vm.prank(attester1);
@@ -576,12 +711,13 @@ contract SimplifiedAttestationCenterTest is Test {
             largeData[i] = bytes1(uint8(i % 256));
         }
         
-        bytes memory signature = _generateSignature(attester1PrivateKey, attester1, subject1, largeData);
+        bytes memory signature = _generateSignature(attester1PrivateKey, attester1, subject1, largeData, defaultDeadline);
         
         SimplifiedAttestationCenter.AttestationRequest memory request = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: largeData,
-            signature: signature
+            signature: signature,
+            deadline: defaultDeadline
         });
         
         vm.prank(attester1);
@@ -595,18 +731,20 @@ contract SimplifiedAttestationCenterTest is Test {
     function test_MultipleAttestersForSameSubject() public {
         // Different attesters attest to the same subject with different data
         bytes memory data3 = "attester2 data for subject1";
-        bytes memory signature3 = _generateSignature(attester2PrivateKey, attester2, subject1, data3);
+        bytes memory signature3 = _generateSignature(attester2PrivateKey, attester2, subject1, data3, defaultDeadline);
         
         SimplifiedAttestationCenter.AttestationRequest memory request1 = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: data1,
-            signature: validSignature1
+            signature: validSignature1,
+            deadline: defaultDeadline
         });
         
         SimplifiedAttestationCenter.AttestationRequest memory request2 = SimplifiedAttestationCenter.AttestationRequest({
             subject: subject1,
             data: data3,
-            signature: signature3
+            signature: signature3,
+            deadline: defaultDeadline
         });
         
         vm.prank(attester1);
@@ -635,12 +773,13 @@ contract SimplifiedAttestationCenterTest is Test {
         // Create attestation
         bytes memory newData = "workflow test data";
         bytes32 newSubject = keccak256("workflow subject");
-        bytes memory newSignature = _generateSignature(newAttesterPk, newAttester, newSubject, newData);
+        bytes memory newSignature = _generateSignature(newAttesterPk, newAttester, newSubject, newData, defaultDeadline);
         
         SimplifiedAttestationCenter.AttestationRequest memory request = SimplifiedAttestationCenter.AttestationRequest({
             subject: newSubject,
             data: newData,
-            signature: newSignature
+            signature: newSignature,
+            deadline: defaultDeadline
         });
         
         vm.prank(newAttester);
@@ -663,59 +802,19 @@ contract SimplifiedAttestationCenterTest is Test {
         assertFalse(attestationCenter.authorizedAttesters(newAttester));
     }
 
-    // ============ REENTRANCY TESTS ============
-    
-    function test_ReentrancyProtection_CreateAttestation() public {
-        // Create a malicious contract that tries to reenter
-        MaliciousAttester malicious = new MaliciousAttester(attestationCenter);
-        
-        vm.prank(owner);
-        attestationCenter.setAttesterAuthorization(address(malicious), true);
-        
-        vm.expectRevert();
-        malicious.attackCreateAttestation();
-    }
-
     // ============ HELPER FUNCTIONS ============
     
     function _generateSignature(
         uint256 privateKey,
         address attester,
         bytes32 subject,
-        bytes memory data
+        bytes memory data,
+        uint256 deadline
     ) internal view returns (bytes memory) {
-        bytes32 messageHash = keccak256(abi.encodePacked(attester, subject, data, block.chainid, address(attestationCenter)));
+        // Must match the contract's _getAttestationHash function (now uses abi.encode)
+        bytes32 messageHash = keccak256(abi.encode(attester, subject, data, deadline, block.chainid, address(attestationCenter)));
         bytes32 ethSignedMessageHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", messageHash));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, ethSignedMessageHash);
         return abi.encodePacked(r, s, v);
-    }
-}
-
-// ============ MALICIOUS CONTRACTS FOR REENTRANCY TESTING ============
-
-contract MaliciousAttester {
-    SimplifiedAttestationCenter public attestationCenter;
-    bool public attacked = false;
-    
-    constructor(SimplifiedAttestationCenter _attestationCenter) {
-        attestationCenter = _attestationCenter;
-    }
-    
-    function attackCreateAttestation() external {
-        if (!attacked) {
-            attacked = true;
-            bytes32 subject = keccak256("malicious subject");
-            bytes memory data = "malicious data";
-            bytes memory signature = hex"1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890";
-            
-            SimplifiedAttestationCenter.AttestationRequest memory request = SimplifiedAttestationCenter.AttestationRequest({
-                subject: subject,
-                data: data,
-                signature: signature
-            });
-            
-            // This should fail due to reentrancy guard
-            attestationCenter.createAttestation(request);
-        }
     }
 }

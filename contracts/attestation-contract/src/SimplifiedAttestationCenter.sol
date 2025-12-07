@@ -39,11 +39,13 @@ contract SimplifiedAttestationCenter is Ownable, ReentrancyGuard {
      * @param subject The subject being attested to
      * @param data Additional attestation data
      * @param signature Signature from the attester
+     * @param deadline Timestamp after which the signature is no longer valid
      */
     struct AttestationRequest {
         bytes32 subject;
         bytes data;
         bytes signature;
+        uint256 deadline;
     }
 
     // ============ STATE VARIABLES ============
@@ -110,6 +112,7 @@ contract SimplifiedAttestationCenter is Ownable, ReentrancyGuard {
     error AttestationAlreadyExists();
     error AttestationAlreadyRevoked();
     error OnlyAttesterCanRevoke();
+    error SignatureExpired();
 
     // ============ CONSTRUCTOR ============
 
@@ -137,7 +140,7 @@ contract SimplifiedAttestationCenter is Ownable, ReentrancyGuard {
 
     /**
      * @dev Creates a new attestation
-     * @param request The attestation request containing subject, data, and signature
+     * @param request The attestation request containing subject, data, signature, and deadline
      * @return attestationId The ID of the newly created attestation
      */
     function createAttestation(AttestationRequest calldata request) 
@@ -146,8 +149,13 @@ contract SimplifiedAttestationCenter is Ownable, ReentrancyGuard {
         nonReentrant 
         returns (uint256 attestationId) 
     {
-        // Verify signature
-        bytes32 messageHash = _getAttestationHash(msg.sender, request.subject, request.data);
+        // Check signature expiry
+        if (block.timestamp > request.deadline) {
+            revert SignatureExpired();
+        }
+
+        // Verify signature (now includes deadline)
+        bytes32 messageHash = _getAttestationHash(msg.sender, request.subject, request.data, request.deadline);
         if (!_verifySignature(messageHash, request.signature, msg.sender)) {
             revert InvalidSignature();
         }
@@ -182,7 +190,7 @@ contract SimplifiedAttestationCenter is Ownable, ReentrancyGuard {
      * @dev Revokes an existing attestation
      * @param attestationId The ID of the attestation to revoke
      */
-    function revokeAttestation(uint256 attestationId) external nonReentrant {
+    function revokeAttestation(uint256 attestationId) external onlyAuthorizedAttester nonReentrant {
         Attestation storage attestation = attestations[attestationId];
         
         if (attestation.attestationId == 0) {
@@ -277,21 +285,31 @@ contract SimplifiedAttestationCenter is Ownable, ReentrancyGuard {
         }
     }
 
+    /**
+     * @dev Override renounceOwnership to prevent accidental ownership loss
+     * @notice This function is disabled to prevent bricking the contract
+     */
+    function renounceOwnership() public view override onlyOwner {
+        revert("Ownership renunciation disabled");
+    }
+
     // ============ INTERNAL FUNCTIONS ============
 
     /**
-     * @dev Generates a hash for an attestation
+     * @dev Generates a hash for an attestation using abi.encode to prevent collisions
      * @param attester The address of the attester
      * @param subject The subject being attested to
      * @param data The attestation data
+     * @param deadline The signature expiry timestamp
      * @return The computed hash
      */
     function _getAttestationHash(
         address attester,
         bytes32 subject,
-        bytes memory data
+        bytes memory data,
+        uint256 deadline
     ) internal view returns (bytes32) {
-        return keccak256(abi.encodePacked(attester, subject, data, block.chainid, address(this)));
+        return keccak256(abi.encode(attester, subject, data, deadline, block.chainid, address(this)));
     }
 
     /**
@@ -310,4 +328,4 @@ contract SimplifiedAttestationCenter is Ownable, ReentrancyGuard {
         address recoveredSigner = ethSignedMessageHash.recover(signature);
         return recoveredSigner == expectedSigner;
     }
-} 
+}
