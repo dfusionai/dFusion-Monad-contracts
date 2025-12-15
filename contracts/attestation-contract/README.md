@@ -6,8 +6,10 @@ The **SimplifiedAttestationCenter** is a blockchain-based attestation system tha
 
 ## 🌐 Deployed Contract
 
-**Network**: Monad Mainnet (Chain ID: 143)  
+**Network**: Monad Mainnet (Chain ID: 143) 
+
 **Address**: ~~[`0x5a2fA76D1595B4D047c54e0DDdF36e5b2Dd3AACd`](https://monadvision.com/address/0x5a2fA76D1595B4D047c54e0DDdF36e5b2Dd3AACd)~~ *(deprecated — pre-review)*
+
 **Address** [`0x9ED42CeBA267C3f7728Cc1F559cd7b545D7CD7d4`](https://monadvision.com/address/0x9ED42CeBA267C3f7728Cc1F559cd7b545D7CD7d4)
 
 ## Audit
