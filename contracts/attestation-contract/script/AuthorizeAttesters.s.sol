@@ -5,8 +5,7 @@ import "forge-std/Script.sol";
 import "../src/SimplifiedAttestationCenter.sol";
 
 contract AuthorizeAttestersScript is Script {
-    // Update this with the deployed contract address
-    address constant ATTESTATION_CENTER = 0x5a2fA76D1595B4D047c54e0DDdF36e5b2Dd3AACd;
+    address constant ATTESTATION_CENTER = 0x9ED42CeBA267C3f7728Cc1F559cd7b545D7CD7d4;
     
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
